@@ -1,0 +1,260 @@
+---
+title: "Machine Learning Final Project"
+author: "David Santamaría"
+date: "9/23/2020"
+output: html_document
+---
+## Summary
+
+The purpose of this project was to predict whether an exercise has been performed correctly of not, however there are 5 different categories depending on how it was excecuted this are: A,B,C,D,E. To make this possible, data from the study: Qualitative Activity Recognition of Weight Lifting Exercises from Velloso, E et al was used, this data contains the sensor information for 6 different subjects performing the 5 cathegories of the excercise. Sensors were placed on the dumbell, the arm, the forearm and the belt. Using this data 3 different model prediction methods were fitted, the most accurate model was random forests with a 0.99 accurracy, so this is the selected model to predict the test data.
+
+## Getting and cleaning the data
+
+The first step is to download the data files and clean the data so the least noise is introduced later in the prediction models. After downloading the files we should read the tables and name each data frame, one as training and the other as testing.
+
+### Getting the data
+```{r,echo=FALSE,results='hide'}
+suppressPackageStartupMessages( library(caret))
+```
+
+```{r,cache=TRUE}
+
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv","TrainingData.csv")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv","TestData.csv")
+setwd("C:/Users/Santa/Desktop/machine learning")
+
+training <- read.table(file = "TrainingData.csv",
+                       header = TRUE,sep = ",")
+testing <- read.table(file = "TestData.csv",
+                      header = TRUE,sep = ",")
+
+```
+
+### Cleaning the data
+
+The first step for cleaning the data is to set "classe" as a factor variable. Also when exploring the data we might see that there a re many columns with Na values and blanck values, thus we will delete those variables and only take into accoun the ones that provide valuable information for the models, we will do this for both the training and testing datasets. Finally the columns from 1 to 7 will be deleted, this columns include the user name,x variable and time stamp info. This is because these variables are not valuable for the model and are only variables calculated by the authors of the data set for their own analysis.
+
+```{r}
+
+## Setting classe as a factor variable
+training$classe <- as.factor(training$classe)
+
+## Cleaning NA variables
+
+Nas <- data.frame(variables = names(training),
+                  isNA = mapply(FUN=function(x)
+                    {sum(is.na(x))},training,
+                    SIMPLIFY = TRUE))
+
+NewDF <- training[,which(Nas$isNA == 0)]
+
+testingDF <- testing[,which(Nas$isNA == 0)]
+
+## Clean blancks
+
+blancks<-which(ifelse(mapply(FUN=function(x)
+  {sum(x=="")},NewDF,
+  SIMPLIFY = TRUE) >= 100,0,1)==0)
+
+NewDF <- NewDF[,-blancks]
+
+testingDF <- testingDF[,-blancks]
+
+## remove user, X and time stamp part 1 until num window.
+
+NewDF <- NewDF[,-c(1:7)]
+testingDF <- testingDF[,-c(1:7)]
+
+## In the validation data set we delete the 
+## problem id
+testingDF <- testingDF[,-53]
+```
+
+The original datasets had dimensions (`r paste(dim(training)[1],dim(training)[2],sep=",")`) and (`r paste(dim(testing)[1],dim(testing)[2],sep=",")`), however, after cleaning the variables the new dimension of the data training and test data frames are: (`r paste(dim(NewDF)[1],dim(NewDF)[2],sep=",")`) and (`r paste(dim(testingDF)[1],dim(testingDF)[2],sep=",")`). 
+
+## Exploratory analysis
+
+Now that we have the final data frames we may do a little summary to the remaining variables in order to understand their data type and values.
+
+```{r, echo = FALSE}
+
+str(NewDF)
+
+```
+
+Thanks to the str() function we understand that all the remaining variables are numeric so further analsis of correlation between variables could be done.  
+
+### Analysis of the covariance between variables
+
+The next table shows those variables which posses a correlation higher than 0.8 between them, we could possibly delete some of the variables or combine them in order to reduce the number of features in the predictive model, however due to lack of information and understanding of the data we will use all of them so we dont get any biased predictions.
+
+```{r, echo = FALSE}
+
+## Before partitioning the data we will analyze correlation between variables
+
+matrixCor <- abs(cor(NewDF[,-53]))
+diag(matrixCor) <- 0
+for(i in 1: dim(matrixCor)[1]){
+  for(j in 1: dim(matrixCor)[1]){
+    if(j > i){
+      matrixCor[i,j] <- 0
+    }
+  }
+}
+
+highCor <- which(matrixCor > 0.8, arr.ind = T)
+
+temporal <- 
+  data.frame(var1 =names(NewDF)[highCor[,1]],
+             var2=names(NewDF)[highCor[,2]])
+
+temporal
+```
+
+Finally we check if any variables have a near zero variability so we can take it out of the model. Since the answer is 0 we understand that all variables have a considerable variability and it is worth to take them into account in the models.
+
+```{r}
+## Check variables with near zero variability
+
+sum(nearZeroVar(NewDF[,-53],
+                saveMetrics = TRUE)[,4])
+
+```
+
+as part of the exploratory analysis we would like to understand any possible relation between the data and making various plots we may see that the data was typed in order, so each "classe" is exactly in a certain block of the data frame, we may see this in the following plots:  
+
+```{r, echo = FALSE}
+## Selecting cross validation method
+
+par(mfcol=c(1,2))
+
+plot(x=c(1:dim(NewDF)[1]),
+     y = NewDF$total_accel_belt,col=NewDF$classe,
+     xlab="observation",
+     ylab="Total bel acceleration")
+
+plot(x=c(1:dim(NewDF)[1]),
+     y = NewDF$total_accel_arm,col=NewDF$classe,
+     xlab="Observation",
+     ylab="Total arm acceleration")
+```
+  
+
+Here we may see that the observations are split by order, so the technique we should use for slicing data should take random samples through the data frame to aleatorize the samples of the training set.
+
+
+```{r}
+
+set.seed(123)
+randomSamp <- sample(1:dim(NewDF)[1],
+                     size =dim(NewDF)[1],
+                     replace = FALSE)
+
+NewDF<-NewDF[randomSamp,]
+```
+```{r, echo = FALSE}
+par(mfcol=c(1,2))
+
+plot(x=c(1:dim(NewDF)[1]),
+     y = NewDF$total_accel_belt,col=NewDF$classe,
+     xlab="observation",
+     ylab="Total bel acceleration")
+
+plot(x=c(1:dim(NewDF)[1]),
+     y = NewDF$total_accel_arm,col=NewDF$classe,
+     xlab="Observation",
+     ylab="Total arm acceleration")
+```
+
+Now that the data is randomized we may use kfolds for cross validating our model and getting higher accuracy, in this case we will be using 3 k folds just to minimize the computer resources consumption and time dedicated to create the predictive models.
+
+## Model construction and results
+
+The fist step is to slice the training data set into training and testing, in this case I've decided to set the 70% of the data as training and the remaining 30% as testing.  
+
+Next we should set the traincontrol() function to use "cv" (cross validation) with 3 k folds.  
+
+Finally 3 training models are fitted to the data and then compared between each other. This models are:  
+
+  - Predicting trees  
+  - Random forests  
+  - Boosting with trees    
+  
+
+```{r,cache=TRUE}
+set.seed(123)
+
+inTrain <- createDataPartition(NewDF$classe,p=0.7,list=FALSE)
+
+myTrain <- NewDF[inTrain,]
+
+myTest <- NewDF[-inTrain,]
+
+## Create a model
+
+# para ensayar
+
+fitControl <- trainControl(method='cv', number = 3)
+
+modelTrain <- train(classe ~.,data = myTrain,method="rpart", trControl= fitControl)
+pred <- predict(modelTrain)
+resultsTrain <- confusionMatrix(myTrain$classe,pred)
+predTest <- predict(modelTrain,newdata=myTest)
+resultsTest <- confusionMatrix(myTest$classe,predTest)
+acRPART <- resultsTest[[3]][1]
+
+rfModelTrain <- train(classe ~., data= myTrain,method="rf",trControl= fitControl,verbose=FALSE)
+rfpred <- predict(rfModelTrain)
+rfresultsTrain <- confusionMatrix(myTrain$classe,rfpred)
+rfpredTest <- predict(rfModelTrain,newdata=myTest)
+rfresultsTest <- confusionMatrix(myTest$classe,rfpredTest)
+acRF <- rfresultsTest[[3]][1]
+
+gbmModelTrain <- train(classe ~., data= myTrain,method="gbm",trControl= fitControl,verbose=FALSE)
+gbmpred <- predict(gbmModelTrain)
+gbmresultsTrain <- confusionMatrix(myTrain$classe,gbmpred)
+gbmpredTest <- predict(gbmModelTrain,newdata=myTest)
+gbmresultsTest <- confusionMatrix(myTest$classe,gbmpredTest)
+acGBM <- gbmresultsTest[[3]][1]
+```
+
+After running the code we check the accuracy of each model in predicting the training data, the results are the following:
+
+```{r, echo = FALSE}
+resultSummary<- data.frame(
+  Model = c("Predicting tree",
+            "Random Forest","Boosting with trees"),
+  Accuracy=rbind(resultsTrain[[3]][1],
+            rfresultsTrain[[3]][1],
+            gbmresultsTrain[[3]][1]))
+
+resultSummary
+```
+
+Clearly Random Forests is the most accurate model in the training, however it was also the most time consuming model for training, meanwhile boosting with trees is slightly less accurate and less time consumng.  
+
+The next step is to predict the testing data frames constructed from the training data set. The accuracy of this predictions are shown in the following table:  
+
+```{r, echo = FALSE}
+resultSummary<- data.frame(
+  Model = c("Predicting tree",
+            "Random Forest","Boosting with trees"),
+  Accuracy=rbind(acRPART,acRF,acGBM))
+
+resultSummary
+
+```
+
+Once again random forests is the most accurate model, hence we will use this model to predict the original validating data set with 20 observations.
+
+## Predicting the validation set
+
+Finally we predict the original validation data frame and hopefully get the correct "classe" of each exercise.
+
+```{r}
+
+predictions <- predict(rfModelTrain,newdata = testingDF)
+
+data.frame(ExerciseID = c(1:20),Classe = predictions)
+
+```
